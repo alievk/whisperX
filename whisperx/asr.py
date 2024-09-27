@@ -28,7 +28,7 @@ class WhisperModel(faster_whisper.WhisperModel):
     Currently only works in non-timestamp mode and fixed prompt for all samples in batch.
     '''
 
-    def generate_segment_batched(self, features: np.ndarray, tokenizer: faster_whisper.tokenizer.Tokenizer, options: faster_whisper.transcribe.TranscriptionOptions, encoder_output = None):
+    def generate_segment_batched(self, features: np.ndarray, tokenizer: faster_whisper.tokenizer.Tokenizer, options: faster_whisper.transcribe.TranscriptionOptions, encoder_output = None, previous_text = None):
         batch_size = features.shape[0]
         all_tokens = []
         prompt_reset_since = 0
@@ -36,6 +36,10 @@ class WhisperModel(faster_whisper.WhisperModel):
             initial_prompt = " " + options.initial_prompt.strip()
             initial_prompt_tokens = tokenizer.encode(initial_prompt)
             all_tokens.extend(initial_prompt_tokens)
+        if previous_text is not None:
+            previous_text = " " + previous_text.strip()
+            previous_text_tokens = tokenizer.encode(previous_text)
+            all_tokens.extend(previous_text_tokens)
         previous_tokens = all_tokens[prompt_reset_since:]
         prompt = self.get_prompt(
             tokenizer,
@@ -134,9 +138,12 @@ class FasterWhisperPipeline(Pipeline):
 
     def _sanitize_parameters(self, **kwargs):
         preprocess_kwargs = {}
+        forward_kwargs = {}
         if "tokenizer" in kwargs:
             preprocess_kwargs["maybe_arg"] = kwargs["maybe_arg"]
-        return preprocess_kwargs, {}, {}
+        if "previous_text" in kwargs:
+            forward_kwargs["previous_text"] = kwargs["previous_text"]
+        return preprocess_kwargs, forward_kwargs, {}
 
     def preprocess(self, audio):
         audio = audio['inputs']
@@ -148,8 +155,8 @@ class FasterWhisperPipeline(Pipeline):
         )
         return {'inputs': features}
 
-    def _forward(self, model_inputs):
-        outputs = self.model.generate_segment_batched(model_inputs['inputs'], self.tokenizer, self.options)
+    def _forward(self, model_inputs, **forward_params):
+        outputs = self.model.generate_segment_batched(model_inputs['inputs'], self.tokenizer, self.options, **forward_params)
         return {'text': outputs}
 
     def postprocess(self, model_outputs):
@@ -171,7 +178,7 @@ class FasterWhisperPipeline(Pipeline):
         return final_iterator
 
     def transcribe(
-        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False
+        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, previous_text=None, print_progress = False, combined_progress=False
     ) -> TranscriptionResult:
         if isinstance(audio, str):
             audio = load_audio(audio)
@@ -215,7 +222,7 @@ class FasterWhisperPipeline(Pipeline):
         segments: List[SingleSegment] = []
         batch_size = batch_size or self._batch_size
         total_segments = len(vad_segments)
-        for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
+        for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers, previous_text=previous_text)):
             if print_progress:
                 base_progress = ((idx + 1) / total_segments) * 100
                 percent_complete = base_progress / 2 if combined_progress else base_progress
